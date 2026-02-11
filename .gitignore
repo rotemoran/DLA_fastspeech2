@@ -1,0 +1,21 @@
+# Ignore LJSpeech raw dataset
+data/LJSpeech-1.1/
+
+# Ignore specific subfolders inside LJSpeech_paper
+preprocessed_data/LJSpeech_paper/duration/
+preprocessed_data/LJSpeech_paper/energy/
+preprocessed_data/LJSpeech_paper/mel/
+preprocessed_data/LJSpeech_paper/pitch/
+preprocessed_data/LJSpeech_paper/TextGrid/
+
+# Ignore specific subfolders inside LJSpeech
+preprocessed_data/LJSpeech/duration/
+preprocessed_data/LJSpeech/energy/
+preprocessed_data/LJSpeech/mel/
+preprocessed_data/LJSpeech/pitch/
+preprocessed_data/LJSpeech/TextGrid/
+
+raw_data/
+__pycache__/
+venv/
+venv3.10/
