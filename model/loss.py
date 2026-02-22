@@ -74,12 +74,9 @@ class FastSpeech2Loss(nn.Module):
         mel_targets.requires_grad = False
 
         # ------------------------
-        # Pitch loss (CWT)
+        # Pitch loss (CWT): targets are always (B, mel_len, num_scales) after dataset expansion
         # ------------------------
-        if self.pitch_feature_level == "phoneme_level":
-            mask_for_pitch = src_masks.unsqueeze(-1)  # (B, T, 1)
-        else:  # frame_level
-            mask_for_pitch = mel_masks.unsqueeze(-1)  # (B, T, 1)
+        mask_for_pitch = mel_masks.unsqueeze(-1)  # (B, mel_len, 1)
 
         # Flatten batch and time but keep num_scales
         pitch_loss_spec = self.mse_loss(
@@ -131,12 +128,12 @@ class FastSpeech2Loss(nn.Module):
             + pitch_stat_loss
         )
 
+        pitch_loss = pitch_loss_spec + pitch_stat_loss
         return (
             total_loss,
             mel_loss,
             postnet_mel_loss,
-            pitch_loss_spec,
-            pitch_stat_loss,
+            pitch_loss,
             energy_loss,
             duration_loss,
         )

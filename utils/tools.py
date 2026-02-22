@@ -16,7 +16,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def to_device(data, device):
-    if len(data) == 12:
+    if len(data) == 13:
         (
             ids,
             raw_texts,
@@ -28,6 +28,7 @@ def to_device(data, device):
             mel_lens,
             max_mel_len,
             pitches,
+            pitch_mean_vars,
             energies,
             durations,
         ) = data
@@ -38,6 +39,7 @@ def to_device(data, device):
         mels = torch.from_numpy(mels).float().to(device)
         mel_lens = torch.from_numpy(mel_lens).to(device)
         pitches = torch.from_numpy(pitches).float().to(device)
+        pitch_mean_vars = torch.from_numpy(pitch_mean_vars).float().to(device)
         energies = torch.from_numpy(energies).to(device)
         durations = torch.from_numpy(durations).long().to(device)
 
@@ -52,6 +54,7 @@ def to_device(data, device):
             mel_lens,
             max_mel_len,
             pitches,
+            pitch_mean_vars,
             energies,
             durations,
         )
@@ -106,6 +109,16 @@ def expand(values, durations):
     return np.array(out)
 
 
+def _cwt_to_1d_for_plot(pitch_cwt, duration):
+    """Reduce CWT pitch (T, num_scales) to 1D for plotting (mean across scales)."""
+    p = np.asarray(pitch_cwt)
+    if p.ndim == 2:
+        p = p.mean(axis=-1)
+    if duration is not None and len(duration) == len(p):
+        p = expand(p, duration)
+    return p
+
+
 def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_config):
 
     basename = targets[0][0]
@@ -113,17 +126,19 @@ def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_con
     mel_len = predictions[9][0].item()
     mel_target = targets[6][0, :mel_len].detach().transpose(0, 1)
     mel_prediction = predictions[1][0, :mel_len].detach().transpose(0, 1)
-    duration = targets[11][0, :src_len].detach().cpu().numpy()
+    # Batch layout: 9=pitches, 10=pitch_mean_vars, 11=energies, 12=durations
+    duration = targets[12][0, :src_len].detach().cpu().numpy()
     if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
         pitch = targets[9][0, :src_len].detach().cpu().numpy()
-        pitch = expand(pitch, duration)
+        pitch = _cwt_to_1d_for_plot(pitch, duration)
     else:
         pitch = targets[9][0, :mel_len].detach().cpu().numpy()
+        pitch = _cwt_to_1d_for_plot(pitch, None)
     if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
-        energy = targets[10][0, :src_len].detach().cpu().numpy()
+        energy = targets[11][0, :src_len].detach().cpu().numpy()
         energy = expand(energy, duration)
     else:
-        energy = targets[10][0, :mel_len].detach().cpu().numpy()
+        energy = targets[11][0, :mel_len].detach().cpu().numpy()
 
     with open(
         os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
@@ -172,9 +187,10 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
         duration = predictions[5][i, :src_len].detach().cpu().numpy()
         if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
             pitch = predictions[2][i, :src_len].detach().cpu().numpy()
-            pitch = expand(pitch, duration)
+            pitch = _cwt_to_1d_for_plot(pitch, duration)
         else:
             pitch = predictions[2][i, :mel_len].detach().cpu().numpy()
+            pitch = _cwt_to_1d_for_plot(pitch, None)
         if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
             energy = predictions[3][i, :src_len].detach().cpu().numpy()
             energy = expand(energy, duration)
@@ -225,6 +241,9 @@ def plot_mel(data, stats, titles):
 
     for i in range(len(data)):
         mel, pitch, energy = data[i]
+        pitch = np.asarray(pitch)
+        if pitch.ndim == 2:
+            pitch = pitch.mean(axis=-1)
         pitch = pitch * pitch_std + pitch_mean
         axes[i][0].imshow(mel, origin="lower")
         axes[i][0].set_aspect(2.5, adjustable="box")

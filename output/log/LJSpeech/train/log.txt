@@ -1,1 +1,0 @@
-Step 100/900000, Total Loss: 9.8617, Mel Loss: 3.5286, Mel PostNet Loss: 2.9126, Pitch Loss: 1.3702, Energy Loss: 1.5294, Duration Loss: 0.5209

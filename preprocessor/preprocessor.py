@@ -7,7 +7,6 @@ import librosa
 import numpy as np
 import pyworld as pw
 import pycwt as cwt
-import pywt
 from scipy.interpolate import interp1d
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
@@ -55,6 +54,8 @@ class Preprocessor:
     def build_from_path(self):
         os.makedirs((os.path.join(self.out_dir, "mel")), exist_ok=True)
         os.makedirs((os.path.join(self.out_dir, "pitch")), exist_ok=True)
+        os.makedirs((os.path.join(self.out_dir, "pitch_mean")), exist_ok=True)
+        os.makedirs((os.path.join(self.out_dir, "pitch_std")), exist_ok=True)
         os.makedirs((os.path.join(self.out_dir, "energy")), exist_ok=True)
         os.makedirs((os.path.join(self.out_dir, "duration")), exist_ok=True)
 
@@ -85,26 +86,47 @@ class Preprocessor:
                         info, pitch, energy, n = ret
                     out.append(info)
 
-                if pitch is not None and len(pitch) > 0:
-                    # Pitch scalers per scale for CWT
-                    num_scales = pitch.shape[0]  # must match the number used in process_utterance
-                    pitch_scaler = [StandardScaler() for _ in range(num_scales)]
+                # CWT: pitch is 2D (num_scales, T); compute mean/std per scale across dataset
+                if pitch is not None and len(pitch) > 0 and getattr(pitch, "ndim", 1) == 2:
+                    cwt_spec = pitch
+                    num_scales = cwt_spec.shape[0]
+                    if pitch_scaler is None:
+                        pitch_scaler = [StandardScaler() for _ in range(num_scales)]
+                    for s in range(num_scales):
+                        pitch_scaler[s].partial_fit(cwt_spec[s, :].reshape(-1, 1))
+                elif pitch is not None and len(pitch) > 0 and getattr(pitch, "ndim", 1) == 1:
+                    if pitch_scaler is None:
+                        pitch_scaler = StandardScaler()
                     pitch_scaler.partial_fit(pitch.reshape((-1, 1)))
-                    
+
                 if len(energy) > 0:
                     energy_scaler.partial_fit(energy.reshape((-1, 1)))
 
                 n_frames += n
 
         print("Computing statistic quantities ...")
-        # Perform normalization if necessary
-        if self.pitch_normalization:
-            pitch_mean = pitch_scaler.mean_[0]
-            pitch_std = pitch_scaler.scale_[0]
+        # CWT: normalize CWT spectrograms per scale (mean/std per scale)
+        use_cwt = self.config["preprocessing"]["pitch"].get("use_cwt", True)
+        if use_cwt and pitch_scaler is not None and isinstance(pitch_scaler, list):
+            pitch_means = [pitch_scaler[s].mean_[0] for s in range(len(pitch_scaler))]
+            pitch_stds = [pitch_scaler[s].scale_[0] for s in range(len(pitch_scaler))]
+            pitch_min, pitch_max = self.normalize_cwt(
+                os.path.join(self.out_dir, "pitch"), pitch_means, pitch_stds
+            )
+            pitch_mean = 0.0
+            pitch_std = 1.0
+        elif not use_cwt or pitch_scaler is None:
+            pitch_min, pitch_max, pitch_mean, pitch_std = 0.0, 1.0, 0.0, 1.0
         else:
-            # A numerical trick to avoid normalization...
-            pitch_mean = 0
-            pitch_std = 1
+            if self.pitch_normalization and pitch_scaler is not None:
+                pitch_mean = pitch_scaler.mean_[0]
+                pitch_std = pitch_scaler.scale_[0]
+            else:
+                pitch_mean = 0
+                pitch_std = 1
+            pitch_min, pitch_max = self.normalize(
+                os.path.join(self.out_dir, "pitch"), pitch_mean, pitch_std
+            )
         if self.energy_normalization:
             energy_mean = energy_scaler.mean_[0]
             energy_std = energy_scaler.scale_[0]
@@ -112,9 +134,6 @@ class Preprocessor:
             energy_mean = 0
             energy_std = 1
 
-        pitch_min, pitch_max = self.normalize(
-            os.path.join(self.out_dir, "pitch"), pitch_mean, pitch_std
-        )
         energy_min, energy_max = self.normalize(
             os.path.join(self.out_dir, "energy"), energy_mean, energy_std
         )
@@ -123,21 +142,24 @@ class Preprocessor:
         with open(os.path.join(self.out_dir, "speakers.json"), "w") as f:
             f.write(json.dumps(speakers))
 
+        stats = {
+            "pitch": [
+                float(pitch_min),
+                float(pitch_max),
+                float(pitch_mean),
+                float(pitch_std),
+            ],
+            "energy": [
+                float(energy_min),
+                float(energy_max),
+                float(energy_mean),
+                float(energy_std),
+            ],
+        }
+        if use_cwt and pitch_scaler is not None and isinstance(pitch_scaler, list):
+            stats["pitch_cwt_scale_means"] = [float(pitch_scaler[s].mean_[0]) for s in range(len(pitch_scaler))]
+            stats["pitch_cwt_scale_stds"] = [float(pitch_scaler[s].scale_[0]) for s in range(len(pitch_scaler))]
         with open(os.path.join(self.out_dir, "stats.json"), "w") as f:
-            stats = {
-                "pitch": [
-                    float(pitch_min),
-                    float(pitch_max),
-                    float(pitch_mean),
-                    float(pitch_std),
-                ],
-                "energy": [
-                    float(energy_min),
-                    float(energy_max),
-                    float(energy_mean),
-                    float(energy_std),
-                ],
-            }
             f.write(json.dumps(stats))
 
         print(
@@ -212,13 +234,13 @@ class Preprocessor:
         pitch_std = np.std(pitch)
         pitch_norm = (pitch - pitch_mean) / (pitch_std + 1e-6)
 
-        # save per-utterance mean/std for reconstruction
-        np.save(os.path.join(self.out_dir, "pitch_mean", f"{basename}_mean.npy"), pitch_mean)
-        np.save(os.path.join(self.out_dir, "pitch_std", f"{basename}_std.npy"), pitch_std)
+        # save per-utterance mean/std for CWT reconstruction (paper: denormalize after inverse CWT)
+        np.save(os.path.join(self.out_dir, "pitch_mean", "{}-{}-mean.npy".format(speaker, basename)), pitch_mean)
+        np.save(os.path.join(self.out_dir, "pitch_std", "{}-{}-std.npy".format(speaker, basename)), pitch_std)
         
-        # 4) Convert to CWT spectrogram
-        num_scales = pitch.shape[0]
-        scales = np.arange(1, num_scales + 1)
+        # 4) Convert to CWT spectrogram (paper: fixed number of scales, e.g. 10)
+        cwt_num_scales = self.config["preprocessing"]["pitch"].get("cwt_num_scales", 10)
+        scales = np.arange(1, cwt_num_scales + 1, dtype=np.float64)
         cwt_spec, _ = cwt.cwt_f(pitch_norm, scales)
 
         # Compute mel-scale spectrogram and energy
@@ -384,4 +406,19 @@ class Preprocessor:
             max_value = max(max_value, max(values))
             min_value = min(min_value, min(values))
 
+        return min_value, max_value
+
+    def normalize_cwt(self, in_dir, means_per_scale, stds_per_scale):
+        """Normalize CWT spectrograms per scale: (x[s,:] - mean[s]) / (std[s] + 1e-6)."""
+        max_value = np.finfo(np.float64).min
+        min_value = np.finfo(np.float64).max
+        num_scales = len(means_per_scale)
+        for fn in os.listdir(in_dir):
+            filepath = os.path.join(in_dir, fn)
+            values = np.load(filepath)  # (num_scales, T)
+            for s in range(min(num_scales, values.shape[0])):
+                values[s, :] = (values[s, :] - means_per_scale[s]) / (stds_per_scale[s] + 1e-6)
+            np.save(filepath, values)
+            max_value = max(max_value, np.max(values))
+            min_value = min(min_value, np.min(values))
         return min_value, max_value

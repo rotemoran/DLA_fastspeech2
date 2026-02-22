@@ -39,8 +39,10 @@ def evaluate(model, step, configs, logger=None, vocoder=None):
         for batch in batchs:
             batch = to_device(batch, device)
             with torch.no_grad():
-                # Forward
-                output = model(*(batch[2:]))
+                # Forward (batch[10] is pitch_mean_vars, only for loss; model takes 10 args)
+                output = model(
+                    *(batch[2:10] + (batch[11], batch[12]))
+                )
 
                 # Cal Loss
                 losses = Loss(batch, output)

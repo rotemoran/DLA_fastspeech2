@@ -25,6 +25,8 @@ preprocessing:
   pitch:
     feature: "phoneme_level" # support 'phoneme_level' or 'frame_level'
     normalization: True
+    use_cwt: True       # CWT pitch spectrogram (paper Appendix C)
+    cwt_num_scales: 10
   energy:
     feature: "phoneme_level" # support 'phoneme_level' or 'frame_level'
     normalization: True

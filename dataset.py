@@ -17,6 +17,7 @@ class Dataset(Dataset):
         self.preprocessed_path = preprocess_config["path"]["preprocessed_path"]
         self.cleaners = preprocess_config["preprocessing"]["text"]["text_cleaners"]
         self.batch_size = train_config["optimizer"]["batch_size"]
+        self.pitch_feature_level = preprocess_config["preprocessing"]["pitch"]["feature"]
 
         self.basename, self.speaker, self.text, self.raw_text = self.process_meta(
             filename
@@ -60,6 +61,21 @@ class Dataset(Dataset):
         )
         duration = np.load(duration_path)
 
+        # Per-utterance pitch mean/std for CWT (used as target for pitch_stat_proj; denormalize after inverse CWT)
+        pitch_mean_path = os.path.join(
+            self.preprocessed_path,
+            "pitch_mean",
+            "{}-{}-mean.npy".format(speaker, basename),
+        )
+        pitch_std_path = os.path.join(
+            self.preprocessed_path,
+            "pitch_std",
+            "{}-{}-std.npy".format(speaker, basename),
+        )
+        pitch_mean = float(np.load(pitch_mean_path))
+        pitch_std = float(np.load(pitch_std_path))
+        pitch_mean_var = np.array([pitch_mean, pitch_std], dtype=np.float32)
+
         sample = {
             "id": basename,
             "speaker": speaker_id,
@@ -67,6 +83,7 @@ class Dataset(Dataset):
             "raw_text": raw_text,
             "mel": mel,
             "pitch": pitch,
+            "pitch_mean_var": pitch_mean_var,
             "energy": energy,
             "duration": duration,
         }
@@ -96,6 +113,7 @@ class Dataset(Dataset):
         raw_texts = [data[idx]["raw_text"] for idx in idxs]
         mels = [data[idx]["mel"] for idx in idxs]
         pitches = [data[idx]["pitch"] for idx in idxs]
+        pitch_mean_vars = [data[idx]["pitch_mean_var"] for idx in idxs]
         energies = [data[idx]["energy"] for idx in idxs]
         durations = [data[idx]["duration"] for idx in idxs]
 
@@ -105,7 +123,19 @@ class Dataset(Dataset):
         speakers = np.array(speakers)
         texts = pad_1D(texts)
         mels = pad_2D(mels)
-        pitches = pad_1D(pitches)
+        # CWT pitch: model always outputs (B, mel_len, num_scales). Targets must match.
+        if self.pitch_feature_level == "phoneme_level":
+            # Expand (num_scales, num_phonemes) by duration -> (num_scales, mel_len), then (mel_len, num_scales)
+            expanded = []
+            for p, d in zip(pitches, durations):
+                # p: (num_scales, num_phonemes)
+                out = np.repeat(p, d, axis=1)  # (num_scales, mel_len)
+                expanded.append(out.T)  # (mel_len, num_scales)
+            pitches = expanded
+        else:
+            pitches = [p.T for p in pitches]  # (mel_len, num_scales)
+        pitches = pad_2D(pitches, max(mel_lens))
+        pitch_mean_vars = np.stack(pitch_mean_vars, axis=0)  # (B, 2)
         energies = pad_1D(energies)
         durations = pad_1D(durations)
 
@@ -120,6 +150,7 @@ class Dataset(Dataset):
             mel_lens,
             max(mel_lens),
             pitches,
+            pitch_mean_vars,
             energies,
             durations,
         )
