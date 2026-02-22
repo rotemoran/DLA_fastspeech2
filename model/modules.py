@@ -19,49 +19,33 @@ class VarianceAdaptor(nn.Module):
 
     def __init__(self, preprocess_config, model_config):
         super(VarianceAdaptor, self).__init__()
+
+        # Duration & length
         self.duration_predictor = VariancePredictor(model_config)
         self.length_regulator = LengthRegulator()
-        self.pitch_predictor = VariancePredictor(model_config)
         self.energy_predictor = VariancePredictor(model_config)
 
-        self.pitch_feature_level = preprocess_config["preprocessing"]["pitch"][
-            "feature"
-        ]
-        self.energy_feature_level = preprocess_config["preprocessing"]["energy"][
-            "feature"
-        ]
+        # Pitch predictor replaced with 1D conv + projection
+        self.pitch_feature_level = preprocess_config["preprocessing"]["pitch"]["feature"]
+        self.energy_feature_level = preprocess_config["preprocessing"]["energy"]["feature"]
         assert self.pitch_feature_level in ["phoneme_level", "frame_level"]
         assert self.energy_feature_level in ["phoneme_level", "frame_level"]
 
-        pitch_quantization = model_config["variance_embedding"]["pitch_quantization"]
+        hidden_size = model_config["transformer"]["encoder_hidden"]
+        dropout = model_config["variance_embedding"].get("dropout", 0.1)
+        num_scales = model_config["variance_embedding"].get("num_scales", 32)  # number of CWT scales
+
+        # Energy bins / embedding remain the same
         energy_quantization = model_config["variance_embedding"]["energy_quantization"]
         n_bins = model_config["variance_embedding"]["n_bins"]
-        assert pitch_quantization in ["linear", "log"]
-        assert energy_quantization in ["linear", "log"]
-        with open(
-            os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
-        ) as f:
+
+        with open(os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")) as f:
             stats = json.load(f)
-            pitch_min, pitch_max = stats["pitch"][:2]
             energy_min, energy_max = stats["energy"][:2]
 
-        if pitch_quantization == "log":
-            self.pitch_bins = nn.Parameter(
-                torch.exp(
-                    torch.linspace(np.log(pitch_min), np.log(pitch_max), n_bins - 1)
-                ),
-                requires_grad=False,
-            )
-        else:
-            self.pitch_bins = nn.Parameter(
-                torch.linspace(pitch_min, pitch_max, n_bins - 1),
-                requires_grad=False,
-            )
         if energy_quantization == "log":
             self.energy_bins = nn.Parameter(
-                torch.exp(
-                    torch.linspace(np.log(energy_min), np.log(energy_max), n_bins - 1)
-                ),
+                torch.exp(torch.linspace(np.log(energy_min), np.log(energy_max), n_bins - 1)),
                 requires_grad=False,
             )
         else:
@@ -69,13 +53,28 @@ class VarianceAdaptor(nn.Module):
                 torch.linspace(energy_min, energy_max, n_bins - 1),
                 requires_grad=False,
             )
+        self.energy_embedding = nn.Embedding(n_bins, hidden_size)
 
-        self.pitch_embedding = nn.Embedding(
-            n_bins, model_config["transformer"]["encoder_hidden"]
+        # ------------------------
+        # PITCH PREDICTOR NETWORK
+        # ------------------------
+        # 2-layer 1D conv with ReLU + layernorm + dropout
+        self.pitch_conv = nn.Sequential(
+            nn.Conv1d(hidden_size, hidden_size, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.LayerNorm(hidden_size),
+            nn.Dropout(dropout),
+            nn.Conv1d(hidden_size, hidden_size, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.LayerNorm(hidden_size),
+            nn.Dropout(dropout),
         )
-        self.energy_embedding = nn.Embedding(
-            n_bins, model_config["transformer"]["encoder_hidden"]
-        )
+
+        # Project to pitch CWT spectrogram (num_scales)
+        self.pitch_proj = nn.Linear(hidden_size, num_scales)
+
+        # Predict mean/variance of original utterance-level pitch contour
+        self.pitch_stat_proj = nn.Linear(hidden_size, 2)  # outputs [mean, variance]
 
     def get_pitch_embedding(self, x, target, mask, control):
         prediction = self.pitch_predictor(x, mask)
@@ -100,31 +99,35 @@ class VarianceAdaptor(nn.Module):
         return prediction, embedding
 
     def forward(
-        self,
-        x,
-        src_mask,
-        mel_mask=None,
-        max_len=None,
-        pitch_target=None,
-        energy_target=None,
-        duration_target=None,
-        p_control=1.0,
-        e_control=1.0,
-        d_control=1.0,
+    self,
+    x,
+    src_mask,
+    mel_mask=None,
+    max_len=None,
+    pitch_target=None,
+    energy_target=None,
+    duration_target=None,
+    p_control=1.0,
+    e_control=1.0,
+    d_control=1.0,
     ):
-
+        # ------------------------
+        # Duration
+        # ------------------------
         log_duration_prediction = self.duration_predictor(x, src_mask)
-        if self.pitch_feature_level == "phoneme_level":
-            pitch_prediction, pitch_embedding = self.get_pitch_embedding(
-                x, pitch_target, src_mask, p_control
-            )
-            x = x + pitch_embedding
+
+        # ------------------------
+        # Energy
+        # ------------------------
         if self.energy_feature_level == "phoneme_level":
             energy_prediction, energy_embedding = self.get_energy_embedding(
-                x, energy_target, src_mask, p_control
+                x, energy_target, src_mask, e_control
             )
             x = x + energy_embedding
 
+        # ------------------------
+        # Length regulation
+        # ------------------------
         if duration_target is not None:
             x, mel_len = self.length_regulator(x, duration_target, max_len)
             duration_rounded = duration_target
@@ -136,26 +139,49 @@ class VarianceAdaptor(nn.Module):
             x, mel_len = self.length_regulator(x, duration_rounded, max_len)
             mel_mask = get_mask_from_lengths(mel_len)
 
-        if self.pitch_feature_level == "frame_level":
-            pitch_prediction, pitch_embedding = self.get_pitch_embedding(
-                x, pitch_target, mel_mask, p_control
-            )
-            x = x + pitch_embedding
+        # ------------------------
+        # Pitch predictor (CWT)
+        # ------------------------
+        # x: (B, T, hidden)
+        x_conv = self.pitch_conv(x.transpose(1, 2))      # (B, hidden, T)
+        x_conv = x_conv.transpose(1, 2)                  # (B, T, hidden)
+
+        pitch_prediction = self.pitch_proj(x_conv)       # (B, T, num_scales)
+
+        # Utterance-level mean/variance
+        global_vec = x_conv.mean(dim=1)                  # (B, hidden)
+        pitch_mean_var = self.pitch_stat_proj(global_vec)  # (B, 2)
+
+        # Optionally add pitch to encoder features (frame-level)
+        if self.pitch_feature_level in ["phoneme_level", "frame_level"]:
+            # You could add a projection if you want to inject pitch into x
+            pitch_embedding = pitch_prediction.mean(dim=-1, keepdim=True)  # simple example
+            x = x + pitch_embedding  # optional, can be replaced with a learned projection
+            
+        # Apply prosody control scaling only during inference
+        if pitch_target is None and p_control != 1.0:
+            pitch_prediction = pitch_prediction * p_control
+
+        # ------------------------
+        # Energy (frame-level)
+        # ------------------------
         if self.energy_feature_level == "frame_level":
             energy_prediction, energy_embedding = self.get_energy_embedding(
-                x, energy_target, mel_mask, p_control
+                x, energy_target, mel_mask, e_control
             )
             x = x + energy_embedding
 
         return (
-            x,
-            pitch_prediction,
-            energy_prediction,
+            x,                  # updated hidden states
+            pitch_prediction,   # CWT pitch spectrogram (B, T, num_scales)
+            pitch_mean_var,     # utterance-level mean/variance (B, 2)
+            energy_prediction,  # energy
             log_duration_prediction,
             duration_rounded,
             mel_len,
             mel_mask,
         )
+ 
 
 
 class LengthRegulator(nn.Module):

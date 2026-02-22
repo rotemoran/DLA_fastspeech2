@@ -6,6 +6,8 @@ import tgt
 import librosa
 import numpy as np
 import pyworld as pw
+import pycwt as cwt
+import pywt
 from scipy.interpolate import interp1d
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
@@ -59,8 +61,9 @@ class Preprocessor:
         print("Processing Data ...")
         out = list()
         n_frames = 0
-        pitch_scaler = StandardScaler()
+        
         energy_scaler = StandardScaler()
+        pitch_scaler = None
 
         # Compute pitch, energy, duration, and mel-spectrogram
         speakers = {}
@@ -82,8 +85,12 @@ class Preprocessor:
                         info, pitch, energy, n = ret
                     out.append(info)
 
-                if len(pitch) > 0:
+                if pitch is not None and len(pitch) > 0:
+                    # Pitch scalers per scale for CWT
+                    num_scales = pitch.shape[0]  # must match the number used in process_utterance
+                    pitch_scaler = [StandardScaler() for _ in range(num_scales)]
                     pitch_scaler.partial_fit(pitch.reshape((-1, 1)))
+                    
                 if len(energy) > 0:
                     energy_scaler.partial_fit(energy.reshape((-1, 1)))
 
@@ -184,37 +191,77 @@ class Preprocessor:
             self.sampling_rate,
             frame_period=self.hop_length / self.sampling_rate * 1000,
         )
-        pitch = pw.stonemask(wav.astype(np.float64), pitch, t, self.sampling_rate)
+        pitch = pw.stonemask(wav.astype(np.float64), pitch, t, self.sampling_rate) #f0
 
         pitch = pitch[: sum(duration)]
         if np.sum(pitch != 0) <= 1:
             return None
+        
+        ### (ourcode) adjusted to apply cwt ourcode
+        # Interpolate unvoiced regions
+        nonzero_ids = np.where(pitch != 0)[0]
+        interp_fn = interp1d(nonzero_ids, pitch[nonzero_ids],
+            fill_value=(pitch[nonzero_ids[0]], pitch[nonzero_ids[-1]]), bounds_error=False)
+        pitch = interp_fn(np.arange(len(pitch)))
+        
+        # Log scale
+        pitch = np.log(pitch + 1e-6)
+        
+        # Utterance-level normalization
+        pitch_mean = np.mean(pitch)
+        pitch_std = np.std(pitch)
+        pitch_norm = (pitch - pitch_mean) / (pitch_std + 1e-6)
+
+        # save per-utterance mean/std for reconstruction
+        np.save(os.path.join(self.out_dir, "pitch_mean", f"{basename}_mean.npy"), pitch_mean)
+        np.save(os.path.join(self.out_dir, "pitch_std", f"{basename}_std.npy"), pitch_std)
+        
+        # 4) Convert to CWT spectrogram
+        num_scales = pitch.shape[0]
+        scales = np.arange(1, num_scales + 1)
+        cwt_spec, _ = cwt.cwt_f(pitch_norm, scales)
 
         # Compute mel-scale spectrogram and energy
         mel_spectrogram, energy = Audio.tools.get_mel_from_wav(wav, self.STFT)
         mel_spectrogram = mel_spectrogram[:, : sum(duration)]
         energy = energy[: sum(duration)]
 
-        if self.pitch_phoneme_averaging:
-            # perform linear interpolation
-            nonzero_ids = np.where(pitch != 0)[0]
-            interp_fn = interp1d(
-                nonzero_ids,
-                pitch[nonzero_ids],
-                fill_value=(pitch[nonzero_ids[0]], pitch[nonzero_ids[-1]]),
-                bounds_error=False,
-            )
-            pitch = interp_fn(np.arange(0, len(pitch)))
+        # if self.pitch_phoneme_averaging:
+        #     # perform linear interpolation
+        #     nonzero_ids = np.where(pitch != 0)[0]
+        #     interp_fn = interp1d(
+        #         nonzero_ids,
+        #         pitch[nonzero_ids],
+        #         fill_value=(pitch[nonzero_ids[0]], pitch[nonzero_ids[-1]]),
+        #         bounds_error=False,
+        #     )
+        #     pitch = interp_fn(np.arange(0, len(pitch)))
 
-            # Phoneme-level average
+        #     # Phoneme-level average
+        #     pos = 0
+        #     for i, d in enumerate(duration):
+        #         if d > 0:
+        #             pitch[i] = np.mean(pitch[pos : pos + d])
+        #         else:
+        #             pitch[i] = 0
+        #         pos += d
+        #     pitch = pitch[: len(duration)]
+        
+        ### (ourcode) adjusted to apply cwt ourcode 
+        if self.pitch_phoneme_averaging:
+            # Phoneme-level average across time dimension
             pos = 0
-            for i, d in enumerate(duration):
+            cwt_ph = []
+
+            for d in duration:
                 if d > 0:
-                    pitch[i] = np.mean(pitch[pos : pos + d])
+                    cwt_ph.append(np.mean(cwt_spec[:, pos:pos+d], axis=1))
                 else:
-                    pitch[i] = 0
+                    cwt_ph.append(np.zeros(cwt_spec.shape[0]))
                 pos += d
-            pitch = pitch[: len(duration)]
+
+            cwt_spec = np.stack(cwt_ph, axis=1)
+            # shape: (num_scales, num_phonemes)
 
         if self.energy_phoneme_averaging:
             # Phoneme-level average
@@ -232,7 +279,7 @@ class Preprocessor:
         np.save(os.path.join(self.out_dir, "duration", dur_filename), duration)
 
         pitch_filename = "{}-pitch-{}.npy".format(speaker, basename)
-        np.save(os.path.join(self.out_dir, "pitch", pitch_filename), pitch)
+        np.save(os.path.join(self.out_dir, "pitch", pitch_filename), cwt_spec)
 
         energy_filename = "{}-energy-{}.npy".format(speaker, basename)
         np.save(os.path.join(self.out_dir, "energy", energy_filename), energy)
@@ -245,7 +292,7 @@ class Preprocessor:
 
         return (
             "|".join([basename, speaker, text, raw_text]),
-            self.remove_outlier(pitch),
+            self.remove_outlier_cwt(cwt_spec),
             self.remove_outlier(energy),
             mel_spectrogram.shape[1],
         )
@@ -299,6 +346,32 @@ class Preprocessor:
         normal_indices = np.logical_and(values > lower, values < upper)
 
         return values[normal_indices]
+    
+    ### (ourcode)
+    def remove_outlier_cwt(self, cwt_spec):
+        """
+        Remove outliers per scale from a 2D CWT array.
+        Input:
+            cwt_spec: np.array of shape (num_scales, T)
+        Output:
+            cleaned_cwt: np.array, same shape but outliers replaced with nearest bounds
+        """
+        cwt_spec = np.array(cwt_spec, copy=True)
+        num_scales, T = cwt_spec.shape
+
+        for s in range(num_scales):
+            scale_values = cwt_spec[s, :]
+            p25 = np.percentile(scale_values, 25)
+            p75 = np.percentile(scale_values, 75)
+            lower = p25 - 1.5 * (p75 - p25)
+            upper = p75 + 1.5 * (p75 - p25)
+
+            # Clip outliers instead of removing frames
+            scale_values = np.clip(scale_values, lower, upper)
+            cwt_spec[s, :] = scale_values
+
+        return cwt_spec
+ 
 
     def normalize(self, in_dir, mean, std):
         max_value = np.finfo(np.float64).min
