@@ -34,5 +34,8 @@ multi_speaker: False
 max_seq_len: 1000
 
 vocoder:
-  model: "HiFi-GAN" # support 'HiFi-GAN', 'MelGAN'
-  speaker: "LJSpeech" # support  'LJSpeech', 'universal'
+  model: "Parallel WaveGAN" # paper uses PWG; also support 'HiFi-GAN', 'MelGAN', 'PWG'
+  speaker: "LJSpeech" # support 'LJSpeech', 'universal' (for HiFi-GAN/MelGAN)
+  # Optional: override paths for Parallel WaveGAN (defaults below)
+  # config: "config/pwg_parallel_wavegan.v1.yaml"
+  # checkpoint: "pwg/checkpoint-400000steps.pkl"

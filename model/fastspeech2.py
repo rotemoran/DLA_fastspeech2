@@ -73,6 +73,7 @@ class FastSpeech2(nn.Module):
         (
             output,
             p_predictions,
+            p_mean_var,
             e_predictions,
             log_d_predictions,
             d_rounded,
@@ -100,6 +101,7 @@ class FastSpeech2(nn.Module):
             output,
             postnet_output,
             p_predictions,
+            p_mean_var,
             e_predictions,
             log_d_predictions,
             d_rounded,

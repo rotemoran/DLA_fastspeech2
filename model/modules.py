@@ -73,6 +73,13 @@ class VarianceAdaptor(nn.Module):
         # Project to pitch CWT spectrogram (num_scales)
         self.pitch_proj = nn.Linear(hidden_size, num_scales)
 
+        # iCWT weights per paper Appendix C Eq 2: F̂_0(t) = Σ_i Ŵ_i(t)(i+2.5)^{-5/2}
+        icwt_weights = np.array(
+            [(i + 2.5) ** (-5.0 / 2.0) for i in range(1, num_scales + 1)],
+            dtype=np.float32,
+        )
+        self.register_buffer("icwt_weights", torch.from_numpy(icwt_weights).view(1, 1, -1))
+
         # Predict mean/variance of original utterance-level pitch contour
         self.pitch_stat_proj = nn.Linear(hidden_size, 2)  # outputs [mean, variance]
 
@@ -152,11 +159,12 @@ class VarianceAdaptor(nn.Module):
         global_vec = x_conv.mean(dim=1)                  # (B, hidden)
         pitch_mean_var = self.pitch_stat_proj(global_vec)  # (B, 2)
 
-        # Optionally add pitch to encoder features (frame-level)
+        # iCWT: recover 1D pitch contour from CWT spectrogram (paper Appendix C Eq 2)
+        pitch_1d = (pitch_prediction * self.icwt_weights).sum(dim=-1, keepdim=True)  # (B, T, 1)
+
+        # Add pitch to encoder features (frame-level); paper uses 1D pitch after iCWT
         if self.pitch_feature_level in ["phoneme_level", "frame_level"]:
-            # You could add a projection if you want to inject pitch into x
-            pitch_embedding = pitch_prediction.mean(dim=-1, keepdim=True)  # simple example
-            x = x + pitch_embedding  # optional, can be replaced with a learned projection
+            x = x + pitch_1d
             
         # Apply prosody control scaling only during inference
         if pitch_target is None and p_control != 1.0:

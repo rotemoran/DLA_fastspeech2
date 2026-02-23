@@ -109,10 +109,75 @@ def expand(values, durations):
     return np.array(out)
 
 
-def _cwt_to_1d_for_plot(pitch_cwt, duration):
-    """Reduce CWT pitch (T, num_scales) to 1D for plotting (mean across scales)."""
+def cwt_to_pitch_1d(
+    cwt_spec,
+    pitch_mean_var=None,
+    cwt_scale_means=None,
+    cwt_scale_stds=None,
+    return_log=False,
+):
+    """
+    Convert CWT pitch spectrogram to 1D pitch contour (paper: iCWT then denormalize).
+    Preprocessing used: log(pitch+1e-6), norm = (log - mean) / std, then CWT.
+    So we: (optional) denorm per-scale, iCWT, then denorm with mean/var, then exp.
+    Args:
+        cwt_spec: (T, num_scales) or (num_scales, T)
+        pitch_mean_var: (2,) or (B, 2) [mean, std] for utterance denorm (log domain)
+        cwt_scale_means: list of length num_scales (reverse per-scale norm)
+        cwt_scale_stds: list of length num_scales
+        return_log: if True return log F0, else linear F0
+    Returns:
+        1D pitch (T,) linear F0 in Hz (or log F0 if return_log=True)
+    """
+    from preprocessor.preprocessor import icwt
+
+    cwt_spec = np.asarray(cwt_spec, dtype=np.float64)
+    if cwt_spec.ndim != 2:
+        raise ValueError("cwt_spec must be 2D")
+    # (T, num_scales) -> (num_scales, T) for icwt
+    if cwt_spec.shape[0] < cwt_spec.shape[1]:
+        cwt_spec = cwt_spec.T
+    num_scales, T = cwt_spec.shape
+
+    if cwt_scale_means is not None and cwt_scale_stds is not None:
+        cwt_scale_means = np.asarray(cwt_scale_means, dtype=np.float64)
+        cwt_scale_stds = np.asarray(cwt_scale_stds, dtype=np.float64)
+        for s in range(min(num_scales, len(cwt_scale_means))):
+            cwt_spec[s, :] = cwt_spec[s, :] * (cwt_scale_stds[s] + 1e-6) + cwt_scale_means[s]
+
+    pitch_norm_1d = icwt(cwt_spec, num_scales=num_scales)
+
+    if pitch_mean_var is not None:
+        pitch_mean_var = np.asarray(pitch_mean_var, dtype=np.float64).flatten()
+        mean_, std_ = pitch_mean_var[0], pitch_mean_var[1] + 1e-6
+        pitch_log = pitch_norm_1d * std_ + mean_
+    else:
+        pitch_log = pitch_norm_1d
+
+    if return_log:
+        return pitch_log
+    return np.exp(pitch_log) - 1e-6
+
+
+def _cwt_to_1d_for_plot(pitch_cwt, duration, stats=None, pitch_mean_var=None, use_icwt=True):
+    """
+    Convert CWT pitch to 1D for plotting. If use_icwt and stats (with pitch_cwt_scale_means/stds)
+    and optional pitch_mean_var are provided, use proper iCWT + denormalization (paper).
+    Otherwise fall back to mean across scales.
+    """
     p = np.asarray(pitch_cwt)
-    if p.ndim == 2:
+    if p.ndim == 2 and use_icwt and stats is not None and "pitch_cwt_scale_means" in stats:
+        cwt_means = stats.get("pitch_cwt_scale_means")
+        cwt_stds = stats.get("pitch_cwt_scale_stds")
+        if cwt_means is not None and cwt_stds is not None:
+            p = cwt_to_pitch_1d(
+                p,
+                pitch_mean_var=pitch_mean_var,
+                cwt_scale_means=cwt_means,
+                cwt_scale_stds=cwt_stds,
+                return_log=False,
+            )
+    elif p.ndim == 2:
         p = p.mean(axis=-1)
     if duration is not None and len(duration) == len(p):
         p = expand(p, duration)
@@ -122,29 +187,29 @@ def _cwt_to_1d_for_plot(pitch_cwt, duration):
 def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_config):
 
     basename = targets[0][0]
-    src_len = predictions[8][0].item()
-    mel_len = predictions[9][0].item()
+    # predictions: 0=mel, 1=postnet_mel, 2=pitch_cwt, 3=pitch_mean_var, 4=energy, 5=log_d, 6=d_rounded, 7=src_masks, 8=mel_masks, 9=src_lens, 10=mel_lens
+    src_len = predictions[9][0].item()
+    mel_len = predictions[10][0].item()
     mel_target = targets[6][0, :mel_len].detach().transpose(0, 1)
     mel_prediction = predictions[1][0, :mel_len].detach().transpose(0, 1)
-    # Batch layout: 9=pitches, 10=pitch_mean_vars, 11=energies, 12=durations
     duration = targets[12][0, :src_len].detach().cpu().numpy()
+    with open(
+        os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
+    ) as f:
+        stats_full = json.load(f)
+    stats = stats_full["pitch"] + stats_full["energy"][:2]
+    pitch_mean_var_target = targets[10][0].detach().cpu().numpy() if len(targets) > 10 else None
     if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
         pitch = targets[9][0, :src_len].detach().cpu().numpy()
-        pitch = _cwt_to_1d_for_plot(pitch, duration)
+        pitch = _cwt_to_1d_for_plot(pitch, duration, stats=stats_full, pitch_mean_var=pitch_mean_var_target, use_icwt=True)
     else:
         pitch = targets[9][0, :mel_len].detach().cpu().numpy()
-        pitch = _cwt_to_1d_for_plot(pitch, None)
+        pitch = _cwt_to_1d_for_plot(pitch, None, stats=stats_full, pitch_mean_var=pitch_mean_var_target, use_icwt=True)
     if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
         energy = targets[11][0, :src_len].detach().cpu().numpy()
         energy = expand(energy, duration)
     else:
         energy = targets[11][0, :mel_len].detach().cpu().numpy()
-
-    with open(
-        os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
-    ) as f:
-        stats = json.load(f)
-        stats = stats["pitch"] + stats["energy"][:2]
 
     fig = plot_mel(
         [
@@ -179,29 +244,31 @@ def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_con
 def synth_samples(targets, predictions, vocoder, model_config, preprocess_config, path):
 
     basenames = targets[0]
+    with open(
+        os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
+    ) as f:
+        stats_full = json.load(f)
+    stats_plot = stats_full["pitch"] + stats_full["energy"][:2]
     for i in range(len(predictions[0])):
         basename = basenames[i]
-        src_len = predictions[8][i].item()
-        mel_len = predictions[9][i].item()
+        src_len = predictions[9][i].item()
+        mel_len = predictions[10][i].item()
         mel_prediction = predictions[1][i, :mel_len].detach().transpose(0, 1)
-        duration = predictions[5][i, :src_len].detach().cpu().numpy()
+        duration = predictions[6][i, :src_len].detach().cpu().numpy()
+        pitch_mean_var_i = predictions[3][i].detach().cpu().numpy() if predictions[3] is not None else None
         if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
             pitch = predictions[2][i, :src_len].detach().cpu().numpy()
-            pitch = _cwt_to_1d_for_plot(pitch, duration)
+            pitch = _cwt_to_1d_for_plot(pitch, duration, stats=stats_full, pitch_mean_var=pitch_mean_var_i, use_icwt=True)
         else:
             pitch = predictions[2][i, :mel_len].detach().cpu().numpy()
-            pitch = _cwt_to_1d_for_plot(pitch, None)
+            pitch = _cwt_to_1d_for_plot(pitch, None, stats=stats_full, pitch_mean_var=pitch_mean_var_i, use_icwt=True)
         if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
-            energy = predictions[3][i, :src_len].detach().cpu().numpy()
+            energy = predictions[4][i, :src_len].detach().cpu().numpy()
             energy = expand(energy, duration)
         else:
-            energy = predictions[3][i, :mel_len].detach().cpu().numpy()
+            energy = predictions[4][i, :mel_len].detach().cpu().numpy()
 
-        with open(
-            os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
-        ) as f:
-            stats = json.load(f)
-            stats = stats["pitch"] + stats["energy"][:2]
+        stats = stats_plot
 
         fig = plot_mel(
             [
@@ -216,7 +283,7 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
     from .model import vocoder_infer
 
     mel_predictions = predictions[1].transpose(1, 2)
-    lengths = predictions[9] * preprocess_config["preprocessing"]["stft"]["hop_length"]
+    lengths = predictions[10] * preprocess_config["preprocessing"]["stft"]["hop_length"]
     wav_predictions = vocoder_infer(
         mel_predictions, vocoder, model_config, preprocess_config, lengths=lengths
     )

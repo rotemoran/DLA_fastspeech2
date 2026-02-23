@@ -10,6 +10,7 @@ On the other hand, pitch spectrograms extracted by continuous wavelet transform 
 ![](./img/model.png)
 
 # Updates
+- Support for **Parallel WaveGAN** vocoder (as in the FastSpeech 2 paper). Use `config/LJSpeech_paper/` and download the PWG checkpoint from [ParallelWaveGAN](https://github.com/kan-bayashi/ParallelWaveGAN) (LJSpeech v1) into `pwg/checkpoint-400000steps.pkl`.
 - 2021/7/8: Release the checkpoint and audio samples of a multi-speaker English TTS model trained on LibriTTS
 - 2021/2/26: Support English and Mandarin TTS
 - 2021/2/26: Support multi-speaker TTS (AISHELL-3 and LibriTTS)

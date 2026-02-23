@@ -14,6 +14,33 @@ from tqdm import tqdm
 import audio as Audio
 
 
+def icwt(cwt_spec, num_scales=None):
+    """
+    Inverse Continuous Wavelet Transform (iCWT) per FastSpeech 2 paper Appendix C, Equation 2.
+    Recovers 1D pitch contour from CWT spectrogram: F̂_0(t) = Σ_{i=1}^{n} Ŵ_i(t)(i+2.5)^{-5/2}.
+    (Ming et al., 2016; Suni et al., 2013)
+    Args:
+        cwt_spec: np.ndarray shape (num_scales, T) or (T, num_scales). CWT coefficients.
+        num_scales: int, number of scales (default: first dimension if (num_scales, T)).
+    Returns:
+        pitch_1d: np.ndarray shape (T,) recovered pitch contour in normalized log domain.
+    """
+    cwt_spec = np.asarray(cwt_spec, dtype=np.float64)
+    if cwt_spec.ndim != 2:
+        raise ValueError("cwt_spec must be 2D (num_scales, T) or (T, num_scales)")
+    if num_scales is None:
+        num_scales = cwt_spec.shape[0]
+    # Assume (num_scales, T); if (T, num_scales) transpose
+    if cwt_spec.shape[1] == num_scales and cwt_spec.shape[0] != num_scales:
+        cwt_spec = cwt_spec.T  # (T, num_scales) -> (num_scales, T)
+    n_scale, T = cwt_spec.shape
+    # Scale indices i = 1..n (paper 1-based); weight for index j (0-based) = (j+1+2.5)**(-5/2)
+    weights = np.array([(j + 1 + 2.5) ** (-5.0 / 2.0) for j in range(n_scale)], dtype=np.float64)
+    # F̂_0(t) = Σ_i Ŵ_i(t) * weight_i
+    pitch_1d = np.dot(weights, cwt_spec)
+    return pitch_1d
+
+
 class Preprocessor:
     def __init__(self, config):
         self.config = config
@@ -239,9 +266,14 @@ class Preprocessor:
         np.save(os.path.join(self.out_dir, "pitch_std", "{}-{}-std.npy".format(speaker, basename)), pitch_std)
         
         # 4) Convert to CWT spectrogram (paper: fixed number of scales, e.g. 10)
+        # pycwt.cwt(signal, dt, ..., freqs) returns (wave, sj, freqs, coi, fft, fftfreqs)
         cwt_num_scales = self.config["preprocessing"]["pitch"].get("cwt_num_scales", 10)
         scales = np.arange(1, cwt_num_scales + 1, dtype=np.float64)
-        cwt_spec, _ = cwt.cwt_f(pitch_norm, scales)
+        dt = 1.0  # pitch is per-frame
+        mother = cwt.Morlet(6)
+        freqs = 1.0 / (mother.flambda() * scales)
+        wave, _, _, _, _, _ = cwt.cwt(pitch_norm, dt, freqs=freqs, wavelet=mother)
+        cwt_spec = np.real(wave)  # real coefficients for downstream (outlier removal, save)
 
         # Compute mel-scale spectrogram and energy
         mel_spectrogram, energy = Audio.tools.get_mel_from_wav(wav, self.STFT)
@@ -372,25 +404,28 @@ class Preprocessor:
     ### (ourcode)
     def remove_outlier_cwt(self, cwt_spec):
         """
-        Remove outliers per scale from a 2D CWT array.
+        Remove outliers per scale from a 2D (or 3D) CWT array.
         Input:
-            cwt_spec: np.array of shape (num_scales, T)
+            cwt_spec: np.array of shape (num_scales, T) or (num_scales, T, ...)
         Output:
             cleaned_cwt: np.array, same shape but outliers replaced with nearest bounds
         """
         cwt_spec = np.array(cwt_spec, copy=True)
-        num_scales, T = cwt_spec.shape
+        num_scales = cwt_spec.shape[0]
 
         for s in range(num_scales):
-            scale_values = cwt_spec[s, :]
-            p25 = np.percentile(scale_values, 25)
-            p75 = np.percentile(scale_values, 75)
+            scale_values = cwt_spec[s, ...]  # 1D or 2D per scale
+            flat = np.asarray(scale_values).ravel()
+            if flat.size == 0:
+                continue
+            p25 = np.percentile(flat, 25)
+            p75 = np.percentile(flat, 75)
             lower = p25 - 1.5 * (p75 - p25)
             upper = p75 + 1.5 * (p75 - p25)
 
-            # Clip outliers instead of removing frames
+            # Clip outliers instead of removing frames (preserves shape)
             scale_values = np.clip(scale_values, lower, upper)
-            cwt_spec[s, :] = scale_values
+            cwt_spec[s, ...] = scale_values
 
         return cwt_spec
  

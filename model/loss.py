@@ -50,9 +50,10 @@ class FastSpeech2Loss(nn.Module):
             energy_predictions,
             log_duration_predictions,
             _,
+            src_masks,
             mel_masks,
             _,
-            src_masks,
+            _,
         ) = predictions
 
         # Invert masks for masked_select

@@ -21,7 +21,7 @@ preprocessing:
   mel:
     n_mel_channels: 80
     mel_fmin: 0
-    mel_fmax: 8000 # please set to 8000 for HiFi-GAN vocoder, set to null for MelGAN vocoder
+    mel_fmax: 7600 # 7600 for Parallel WaveGAN (paper); 8000 for HiFi-GAN; null for MelGAN
   pitch:
     feature: "frame_level" # support 'phoneme_level' or 'frame_level'
     normalization: False
