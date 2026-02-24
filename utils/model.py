@@ -5,7 +5,6 @@ import yaml
 import torch
 import numpy as np
 
-import hifigan
 from model import FastSpeech2, ScheduledOptim
 
 
@@ -77,7 +76,7 @@ def get_vocoder(config, device):
                 "Install with: pip install parallel-wavegan"
             )
         pwg_config_path = config["vocoder"].get("config", "config/pwg_parallel_wavegan.v1.yaml")
-        pwg_checkpoint_path = config["vocoder"].get("checkpoint", "pwg/checkpoint-400000steps.pkl")
+        pwg_checkpoint_path = config["vocoder"].get("checkpoint")
         with open(pwg_config_path, "r") as f:
             pwg_config = yaml.safe_load(f)
         vocoder = load_model(pwg_checkpoint_path, pwg_config)

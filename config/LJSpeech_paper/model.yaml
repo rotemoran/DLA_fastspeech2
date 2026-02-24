@@ -7,8 +7,8 @@ transformer:
   decoder_hidden: 256
   conv_filter_size: 1024
   conv_kernel_size: [9, 1]
-  encoder_dropout: 0.2
-  decoder_dropout: 0.2
+  encoder_dropout: 0.1
+  decoder_dropout: 0.1
 
 variance_predictor:
   filter_size: 256
@@ -21,14 +21,6 @@ variance_embedding:
   n_bins: 256
   num_scales: 10  # CWT pitch spectrogram scales (must match preprocess cwt_num_scales)
 
-# gst:
-#   use_gst: False
-#   conv_filters: [32, 32, 64, 64, 128, 128]
-#   gru_hidden: 128
-#   token_size: 128
-#   n_style_token: 10
-#   attn_head: 4
-
 multi_speaker: False
 
 max_seq_len: 1000
@@ -36,6 +28,6 @@ max_seq_len: 1000
 vocoder:
   model: "Parallel WaveGAN" # paper uses PWG; also support 'HiFi-GAN', 'MelGAN', 'PWG'
   speaker: "LJSpeech" # support 'LJSpeech', 'universal' (for HiFi-GAN/MelGAN)
-  # Optional: override paths for Parallel WaveGAN (defaults below)
-  # config: "config/pwg_parallel_wavegan.v1.yaml"
-  # checkpoint: "pwg/checkpoint-400000steps.pkl"
+  Optional: override paths for Parallel WaveGAN (defaults below)
+  config: "train_nodev_ljspeech_parallel_wavegan.v1/config.yml"
+  checkpoint: "train_nodev_ljspeech_parallel_wavegan.v1/checkpoint-400000steps.pkl"

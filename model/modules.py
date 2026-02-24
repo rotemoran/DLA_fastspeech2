@@ -33,7 +33,7 @@ class VarianceAdaptor(nn.Module):
 
         hidden_size = model_config["transformer"]["encoder_hidden"]
         dropout = model_config["variance_embedding"].get("dropout", 0.1)
-        num_scales = model_config["variance_embedding"].get("num_scales", 32)  # number of CWT scales
+        num_scales = model_config["variance_embedding"].get("num_scales", 10)  # number of CWT scales
 
         # Energy bins / embedding remain the same
         energy_quantization = model_config["variance_embedding"]["energy_quantization"]
@@ -62,12 +62,16 @@ class VarianceAdaptor(nn.Module):
         self.pitch_conv = nn.Sequential(
             nn.Conv1d(hidden_size, hidden_size, kernel_size=3, padding=1),
             nn.ReLU(),
+            Transpose(1, 2),
             nn.LayerNorm(hidden_size),
             nn.Dropout(dropout),
+            Transpose(1, 2),
             nn.Conv1d(hidden_size, hidden_size, kernel_size=3, padding=1),
             nn.ReLU(),
+            Transpose(1, 2),
             nn.LayerNorm(hidden_size),
             nn.Dropout(dropout),
+            Transpose(1, 2),
         )
 
         # Project to pitch CWT spectrogram (num_scales)
@@ -229,7 +233,7 @@ class LengthRegulator(nn.Module):
 
 
 class VariancePredictor(nn.Module):
-    """Duration, Pitch and Energy Predictor"""
+    """Duration and Energy Predictor"""
 
     def __init__(self, model_config):
         super(VariancePredictor, self).__init__()
@@ -323,8 +327,17 @@ class Conv(nn.Module):
         )
 
     def forward(self, x):
-        x = x.contiguous().transpose(1, 2)
+        x = x.transpose(1, 2)
         x = self.conv(x)
-        x = x.contiguous().transpose(1, 2)
+        x = x.transpose(1, 2)
 
         return x
+    
+    
+class Transpose(nn.Module):
+    def __init__(self, dim0, dim1):
+        super().__init__()
+        self.dim0 = dim0
+        self.dim1 = dim1
+    def forward(self, x):
+        return x.transpose(self.dim0, self.dim1)
