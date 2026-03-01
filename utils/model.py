@@ -103,7 +103,9 @@ def vocoder_infer(mels, vocoder, model_config, preprocess_config, lengths=None):
         elif name == "Parallel WaveGAN" or name == "PWG":
             wavs = []
             for i in range(mels.size(0)):
-                w = vocoder.inference(c=mels[i : i + 1])
+                mel = mels[i : i + 1]
+                mel = mel.squeeze(0).transpose(0, 1)
+                w = vocoder.inference(c=mel)
                 wavs.append(w.view(-1).cpu().numpy())
         else:
             raise ValueError(f"Unknown vocoder: {name}")

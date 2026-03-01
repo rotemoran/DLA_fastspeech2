@@ -71,13 +71,14 @@ def main(args, configs):
     outer_bar = tqdm(total=total_step, desc="Training", position=0)
     outer_bar.n = args.restore_step
     outer_bar.update()
-
+   
     while True:
         inner_bar = tqdm(total=len(loader), desc="Epoch {}".format(epoch), position=1)
         for batchs in loader:
             for batch in batchs:
                 batch = to_device(batch, device)
                 batch = tuple(map(lambda x: x.float() if torch.is_tensor(x) and x.dtype == torch.float64 else x, batch))
+                
                 # Forward (batch[10] is pitch_mean_vars, only for loss; model takes 10 args)
                 output = model(
                     *(batch[2:10] + (batch[11], batch[12]))

@@ -274,11 +274,13 @@ class Preprocessor:
         freqs = 1.0 / (mother.flambda() * scales)
         wave, _, _, _, _, _ = cwt.cwt(pitch_norm, dt, freqs=freqs, wavelet=mother)
         cwt_spec = np.real(wave)  # real coefficients for downstream (outlier removal, save)
+        cwt_spec = self.remove_outlier_cwt(cwt_spec)
 
         # Compute mel-scale spectrogram and energy
         mel_spectrogram, energy = Audio.tools.get_mel_from_wav(wav, self.STFT)
         mel_spectrogram = mel_spectrogram[:, : sum(duration)]
         energy = energy[: sum(duration)]
+        energy = self.remove_outlier(energy)
 
         # if self.pitch_phoneme_averaging:
         #     # perform linear interpolation
@@ -346,8 +348,8 @@ class Preprocessor:
 
         return (
             "|".join([basename, speaker, text, raw_text]),
-            self.remove_outlier_cwt(cwt_spec),
-            self.remove_outlier(energy),
+            cwt_spec,
+            energy,
             mel_spectrogram.shape[1],
         )
 
@@ -397,9 +399,8 @@ class Preprocessor:
         p75 = np.percentile(values, 75)
         lower = p25 - 1.5 * (p75 - p25)
         upper = p75 + 1.5 * (p75 - p25)
-        normal_indices = np.logical_and(values > lower, values < upper)
 
-        return values[normal_indices]
+        return np.clip(values, lower, upper)
     
     ### (ourcode)
     def remove_outlier_cwt(self, cwt_spec):

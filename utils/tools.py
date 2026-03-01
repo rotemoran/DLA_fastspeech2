@@ -222,15 +222,18 @@ def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_con
 
     if vocoder is not None:
         from .model import vocoder_infer
+        
+        mel_t = mel_target.unsqueeze(0) if mel_target.dim() == 2 else mel_target.unsqueeze(0).squeeze(2)
+        mel_p = mel_prediction.unsqueeze(0) if mel_prediction.dim() == 2 else mel_prediction.unsqueeze(0).squeeze(2)
 
         wav_reconstruction = vocoder_infer(
-            mel_target.unsqueeze(0),
+            mel_t,
             vocoder,
             model_config,
             preprocess_config,
         )[0]
         wav_prediction = vocoder_infer(
-            mel_prediction.unsqueeze(0),
+            mel_p,
             vocoder,
             model_config,
             preprocess_config,

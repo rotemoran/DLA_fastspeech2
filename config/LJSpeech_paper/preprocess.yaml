@@ -29,4 +29,4 @@ preprocessing:
     cwt_num_scales: 10  # number of wavelet scales (paper uses 10)
   energy:
     feature: "frame_level" # support 'phoneme_level' or 'frame_level'
-    normalization: False
+    normalization: True
