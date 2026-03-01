@@ -164,7 +164,14 @@ class VarianceAdaptor(nn.Module):
         pitch_mean_var = self.pitch_stat_proj(global_vec)  # (B, 2)
 
         # iCWT: recover 1D pitch contour from CWT spectrogram (paper Appendix C Eq 2)
-        pitch_1d = (pitch_prediction * self.icwt_weights).sum(dim=-1, keepdim=True)  # (B, T, 1)
+        pitch_1d_pred = (pitch_prediction * self.icwt_weights).sum(dim=-1, keepdim=True)  # (B, T, 1)
+
+        # Teacher forcing: use ground-truth pitch for conditioning when available (training).
+        # FastSpeech2 uses GT duration, pitch, energy during training; predicted at inference.
+        if pitch_target is not None:
+            pitch_1d = (pitch_target * self.icwt_weights).sum(dim=-1, keepdim=True)  # (B, T, 1)
+        else:
+            pitch_1d = pitch_1d_pred
 
         # Add pitch to encoder features (frame-level); paper uses 1D pitch after iCWT
         if self.pitch_feature_level in ["phoneme_level", "frame_level"]:
