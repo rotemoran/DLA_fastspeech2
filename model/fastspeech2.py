@@ -50,6 +50,7 @@ class FastSpeech2(nn.Module):
         mel_lens=None,
         max_mel_len=None,
         p_targets=None,
+        p_mean_var_target=None,
         e_targets=None,
         d_targets=None,
         p_control=1.0,
@@ -85,11 +86,12 @@ class FastSpeech2(nn.Module):
             mel_masks,
             max_mel_len,
             p_targets,
-            e_targets,
-            d_targets,
-            p_control,
-            e_control,
-            d_control,
+            p_mean_var_target=p_mean_var_target,
+            energy_target=e_targets,
+            duration_target=d_targets,
+            p_control=p_control,
+            e_control=e_control,
+            d_control=d_control,
         )
 
         output, mel_masks = self.decoder(output, mel_masks)

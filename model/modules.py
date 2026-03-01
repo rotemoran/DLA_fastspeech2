@@ -41,8 +41,7 @@ class VarianceAdaptor(nn.Module):
 
         with open(os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")) as f:
             stats = json.load(f)
-            energy_min, energy_max = stats["energy"][:2]
-
+        energy_min, energy_max = stats["energy"][:2]
         if energy_quantization == "log":
             self.energy_bins = nn.Parameter(
                 torch.exp(torch.linspace(np.log(energy_min), np.log(energy_max), n_bins - 1)),
@@ -85,18 +84,55 @@ class VarianceAdaptor(nn.Module):
         self.register_buffer("icwt_weights", torch.from_numpy(icwt_weights).view(1, 1, -1))
 
         # Predict mean/variance of original utterance-level pitch contour
-        self.pitch_stat_proj = nn.Linear(hidden_size, 2)  # outputs [mean, variance]
+        self.pitch_stat_proj = nn.Linear(hidden_size, 2)  # outputs [mean, std] (paper: for denorm after iCWT)
 
-    def get_pitch_embedding(self, x, target, mask, control):
-        prediction = self.pitch_predictor(x, mask)
-        if target is not None:
-            embedding = self.pitch_embedding(torch.bucketize(target, self.pitch_bins))
-        else:
-            prediction = prediction * control
-            embedding = self.pitch_embedding(
-                torch.bucketize(prediction, self.pitch_bins)
+        # Pitch bins + embedding (paper Sec 2.3: quantize F0 to 256 values in log-scale, convert to embedding)
+        pitch_quantization = model_config["variance_embedding"].get("pitch_quantization", "log")
+        if pitch_quantization == "log" and "pitch_log_min" in stats and "pitch_log_max" in stats:
+            pitch_min, pitch_max = stats["pitch_log_min"], stats["pitch_log_max"]
+            self.pitch_bins = nn.Parameter(
+                torch.linspace(pitch_min, pitch_max, n_bins - 1),
+                requires_grad=False,
             )
-        return prediction, embedding
+        else:
+            # Fallback for non-CWT or missing stats
+            self.pitch_bins = nn.Parameter(
+                torch.linspace(np.log(60), np.log(500), n_bins - 1),
+                requires_grad=False,
+            )
+        self.pitch_embedding = nn.Embedding(n_bins, hidden_size)
+
+        # Per-scale CWT denorm (preprocessor applies normalize_cwt; reverse before iCWT)
+        if "pitch_cwt_scale_means" in stats and "pitch_cwt_scale_stds" in stats:
+            cwt_means = torch.tensor(stats["pitch_cwt_scale_means"], dtype=torch.float32)
+            cwt_stds = torch.tensor(stats["pitch_cwt_scale_stds"], dtype=torch.float32)
+            self.register_buffer("cwt_scale_means", cwt_means.view(1, 1, -1))
+            self.register_buffer("cwt_scale_stds", cwt_stds.view(1, 1, -1))
+        else:
+            self.register_buffer("cwt_scale_means", None)
+            self.register_buffer("cwt_scale_stds", None)
+
+    def get_pitch_embedding(self, pitch_cwt, pitch_mean_var, p_control=1.0):
+        """
+        Paper Sec 2.3: CWT -> iCWT -> denorm to log F0 -> quantize -> embed.
+        Args:
+            pitch_cwt: (B, T, num_scales) - ground-truth or predicted CWT spectrogram
+            pitch_mean_var: (B, 2) [mean, std] for utterance denorm (log domain)
+            p_control: prosody scaling (paper Appendix E)
+        Returns:
+            pitch_embedding: (B, T, hidden)
+        """
+        cwt_for_icwt = pitch_cwt
+        if self.cwt_scale_means is not None:
+            cwt_for_icwt = pitch_cwt * self.cwt_scale_stds + self.cwt_scale_means
+        pitch_norm_1d = (cwt_for_icwt * self.icwt_weights).sum(dim=-1)  # (B, T)
+        mean_var = pitch_mean_var.unsqueeze(1)  # (B, 1, 2)
+        pitch_log_f0 = pitch_norm_1d * (mean_var[:, :, 1] + 1e-6) + mean_var[:, :, 0]
+        if p_control != 1.0:
+            pitch_log_f0 = pitch_log_f0 + math.log(p_control)
+        pitch_bucket = torch.bucketize(pitch_log_f0, self.pitch_bins)
+        pitch_bucket = torch.clamp(pitch_bucket, 0, self.pitch_embedding.num_embeddings - 1)
+        return self.pitch_embedding(pitch_bucket)
 
     def get_energy_embedding(self, x, target, mask, control):
         prediction = self.energy_predictor(x, mask)
@@ -110,17 +146,18 @@ class VarianceAdaptor(nn.Module):
         return prediction, embedding
 
     def forward(
-    self,
-    x,
-    src_mask,
-    mel_mask=None,
-    max_len=None,
-    pitch_target=None,
-    energy_target=None,
-    duration_target=None,
-    p_control=1.0,
-    e_control=1.0,
-    d_control=1.0,
+        self,
+        x,
+        src_mask,
+        mel_mask=None,
+        max_len=None,
+        pitch_target=None,
+        pitch_mean_var_target=None,
+        energy_target=None,
+        duration_target=None,
+        p_control=1.0,
+        e_control=1.0,
+        d_control=1.0,
     ):
         # ------------------------
         # Duration
@@ -163,23 +200,17 @@ class VarianceAdaptor(nn.Module):
         global_vec = x_conv.mean(dim=1)                  # (B, hidden)
         pitch_mean_var = self.pitch_stat_proj(global_vec)  # (B, 2)
 
-        # iCWT: recover 1D pitch contour from CWT spectrogram (paper Appendix C Eq 2)
-        pitch_1d_pred = (pitch_prediction * self.icwt_weights).sum(dim=-1, keepdim=True)  # (B, T, 1)
+        # Teacher forcing: use GT pitch for embedding when available (training)
+        pitch_cwt = pitch_target if pitch_target is not None else pitch_prediction
+        pitch_mean_var_for_embed = (
+            pitch_mean_var_target if pitch_target is not None else pitch_mean_var
+        )
+        pitch_embedding = self.get_pitch_embedding(
+            pitch_cwt, pitch_mean_var_for_embed, p_control
+        )
 
-        # Teacher forcing: use ground-truth pitch for conditioning when available (training).
-        # FastSpeech2 uses GT duration, pitch, energy during training; predicted at inference.
-        if pitch_target is not None:
-            pitch_1d = (pitch_target * self.icwt_weights).sum(dim=-1, keepdim=True)  # (B, T, 1)
-        else:
-            pitch_1d = pitch_1d_pred
-
-        # Add pitch to encoder features (frame-level); paper uses 1D pitch after iCWT
         if self.pitch_feature_level in ["phoneme_level", "frame_level"]:
-            x = x + pitch_1d
-            
-        # Apply prosody control scaling only during inference
-        if pitch_target is None and p_control != 1.0:
-            pitch_prediction = pitch_prediction * p_control
+            x = x + pitch_embedding
 
         # ------------------------
         # Energy (frame-level)

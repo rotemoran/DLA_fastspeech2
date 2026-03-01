@@ -79,9 +79,9 @@ def main(args, configs):
                 batch = to_device(batch, device)
                 batch = tuple(map(lambda x: x.float() if torch.is_tensor(x) and x.dtype == torch.float64 else x, batch))
                 
-                # Forward (batch[10] is pitch_mean_vars, only for loss; model takes 10 args)
+                # Forward: batch[2:10]=speakers..pitches, batch[10]=pitch_mean_vars, batch[11,12]=energies,durations
                 output = model(
-                    *(batch[2:10] + (batch[11], batch[12]))
+                    *(batch[2:10] + (batch[10], batch[11], batch[12]))
                 )
 
                 # Cal Loss

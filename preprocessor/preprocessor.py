@@ -92,6 +92,7 @@ class Preprocessor:
         
         energy_scaler = StandardScaler()
         pitch_scaler = None
+        pitch_log_min, pitch_log_max = np.inf, -np.inf  # for CWT: log F0 range for quantization (paper Sec 2.3)
 
         # Compute pitch, energy, duration, and mel-spectrogram
         speakers = {}
@@ -110,8 +111,13 @@ class Preprocessor:
                     if ret is None:
                         continue
                     else:
-                        info, pitch, energy, n = ret
+                        info, pitch, energy, n, pitch_log_1d = ret
                     out.append(info)
+
+                    # Track log F0 range for pitch quantization (paper: 256 bins in log-scale)
+                    if pitch_log_1d is not None and len(pitch_log_1d) > 0:
+                        pitch_log_min = min(pitch_log_min, float(np.min(pitch_log_1d)))
+                        pitch_log_max = max(pitch_log_max, float(np.max(pitch_log_1d)))
 
                 # CWT: pitch is 2D (num_scales, T); compute mean/std per scale across dataset
                 if pitch is not None and len(pitch) > 0 and getattr(pitch, "ndim", 1) == 2:
@@ -186,6 +192,13 @@ class Preprocessor:
         if use_cwt and pitch_scaler is not None and isinstance(pitch_scaler, list):
             stats["pitch_cwt_scale_means"] = [float(pitch_scaler[s].mean_[0]) for s in range(len(pitch_scaler))]
             stats["pitch_cwt_scale_stds"] = [float(pitch_scaler[s].scale_[0]) for s in range(len(pitch_scaler))]
+            # Log F0 range for pitch quantization (paper Sec 2.3: 256 bins in log-scale)
+            if pitch_log_max > pitch_log_min:
+                stats["pitch_log_min"] = float(pitch_log_min)
+                stats["pitch_log_max"] = float(pitch_log_max)
+            else:
+                stats["pitch_log_min"] = float(np.log(60))   # fallback: ~4.1
+                stats["pitch_log_max"] = float(np.log(500))  # fallback: ~6.2
         with open(os.path.join(self.out_dir, "stats.json"), "w") as f:
             f.write(json.dumps(stats))
 
@@ -351,6 +364,7 @@ class Preprocessor:
             cwt_spec,
             energy,
             mel_spectrogram.shape[1],
+            pitch,  # log F0 before CWT (for pitch_log_min/max in build_from_path)
         )
 
     def get_alignment(self, tier):
