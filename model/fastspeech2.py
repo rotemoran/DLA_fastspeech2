@@ -86,7 +86,7 @@ class FastSpeech2(nn.Module):
             mel_masks,
             max_mel_len,
             p_targets,
-            p_mean_var_target=p_mean_var_target,
+            pitch_mean_var_target=p_mean_var_target,
             energy_target=e_targets,
             duration_target=d_targets,
             p_control=p_control,
