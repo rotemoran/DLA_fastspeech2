@@ -294,27 +294,6 @@ class Preprocessor:
         mel_spectrogram = mel_spectrogram[:, : sum(duration)]
         energy = energy[: sum(duration)]
         energy = self.remove_outlier(energy)
-
-        # if self.pitch_phoneme_averaging:
-        #     # perform linear interpolation
-        #     nonzero_ids = np.where(pitch != 0)[0]
-        #     interp_fn = interp1d(
-        #         nonzero_ids,
-        #         pitch[nonzero_ids],
-        #         fill_value=(pitch[nonzero_ids[0]], pitch[nonzero_ids[-1]]),
-        #         bounds_error=False,
-        #     )
-        #     pitch = interp_fn(np.arange(0, len(pitch)))
-
-        #     # Phoneme-level average
-        #     pos = 0
-        #     for i, d in enumerate(duration):
-        #         if d > 0:
-        #             pitch[i] = np.mean(pitch[pos : pos + d])
-        #         else:
-        #             pitch[i] = 0
-        #         pos += d
-        #     pitch = pitch[: len(duration)]
         
         ### (ourcode) adjusted to apply cwt ourcode 
         if self.pitch_phoneme_averaging:

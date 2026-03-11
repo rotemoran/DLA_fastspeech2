@@ -1,7 +1,7 @@
 dataset: "LJSpeech_paper"
 
 path:
-  corpus_path: "data/LJSpeech-1.1"
+  corpus_path: "./data/LJSpeech-1.1"
   lexicon_path: "lexicon/librispeech-lexicon.txt"
   raw_path: "./raw_data/LJSpeech"
   preprocessed_path: "./preprocessed_data/LJSpeech_paper"
@@ -20,13 +20,12 @@ preprocessing:
     win_length: 1024
   mel:
     n_mel_channels: 80
-    mel_fmin: 0
-    mel_fmax: 7600 # 7600 for Parallel WaveGAN (paper); 8000 for HiFi-GAN; null for MelGAN
+    mel_fmin: 80 # please set to 0 for HiFi-GAN vocoder, set to null for MelGAN vocoder, 80 for parallel_wavegan
+    mel_fmax: 7600 # please set to 8000 for HiFi-GAN vocoder, set to null for MelGAN vocoder, 7600 for parallel_wavegan
   pitch:
     feature: "frame_level" # support 'phoneme_level' or 'frame_level'
     normalization: False
-    use_cwt: True       # CWT pitch spectrogram (paper Appendix C)
-    cwt_num_scales: 10  # number of wavelet scales (paper uses 10)
+    use_cwt: True
   energy:
     feature: "frame_level" # support 'phoneme_level' or 'frame_level'
     normalization: True
