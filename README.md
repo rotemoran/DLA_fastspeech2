@@ -8,7 +8,7 @@ This implementation is more similar to [version 2](https://arxiv.org/abs/2006.04
 
 ![](./img/model.png)
 
-# Updates
+# Changes in the implementation
 - Support for **Parallel WaveGAN** vocoder (as in the FastSpeech 2 paper). Use `config/LJSpeech_paper/` and download the PWG checkpoint from [ParallelWaveGAN](https://github.com/kan-bayashi/ParallelWaveGAN) (LJSpeech v1) into `pwg/checkpoint-400000steps.pkl`.
 - modified pich modeling to utilize pitch spectrograms extracted by continuous wavelet transform as oppose to directly using F0 values.
 
@@ -82,6 +82,10 @@ python3 train.py -p config/LJSpeech_paper/preprocess.yaml -m config/LJSpeech_pap
 
 The model takes less than 10k steps (less than 1 hour on my GTX1080Ti GPU) of training to generate audio samples with acceptable quality, which is much more efficient than the autoregressive models such as Tacotron2.
 
+## Evalution
+
+the paper evaluated the model performance via mean opinion score (MOS) evaluation. therefore the repo doesnt contain automated evaluation code.
+
 
 # References
 - [FastSpeech2 implementation by ming](https://github.com/ming024/FastSpeech2)
@@ -89,16 +93,3 @@ The model takes less than 10k steps (less than 1 hour on my GTX1080Ti GPU) of tr
 - [xcmyz's FastSpeech implementation](https://github.com/xcmyz/FastSpeech)
 - [TensorSpeech's FastSpeech 2 implementation](https://github.com/TensorSpeech/TensorflowTTS)
 - [rishikksh20's FastSpeech 2 implementation](https://github.com/rishikksh20/FastSpeech2)
-
-# Citation
-```
-@INPROCEEDINGS{chien2021investigating,
-  author={Chien, Chung-Ming and Lin, Jheng-Hao and Huang, Chien-yu and Hsu, Po-chun and Lee, Hung-yi},
-  booktitle={ICASSP 2021 - 2021 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)}, 
-  title={Investigating on Incorporating Pretrained and Learnable Speaker Representations for Multi-Speaker Multi-Style Text-to-Speech}, 
-  year={2021},
-  volume={},
-  number={},
-  pages={8588-8592},
-  doi={10.1109/ICASSP39728.2021.9413880}}
-```
